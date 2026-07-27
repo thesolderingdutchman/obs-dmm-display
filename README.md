@@ -2,6 +2,8 @@
 
 A small Flask-based display server for reading measurements from a supported multimeter and exposing them over HTTP for a local overlay or dashboard.
 
+![DMM UI screenshot](dmm.png)
+
 ## Current status
 
 ### UT161B
@@ -92,6 +94,19 @@ Run the app with a single selected meter mode at startup:
 
 - `DMM_MODE=ut161b python dmm.py`
 - `DMM_MODE=ut8802e python dmm.py`
+
+Now open the index.html file in a browser of your choice and it should display results.
+
+## OBS Setup
+
+To use this as a live overlay in OBS:
+
+1. Start the app (`DMM_MODE=... python dmm.py`) and leave it running in the background.
+2. In OBS, add a new **Browser Source** to your scene.
+3. Under **Local file**, check the box and point it at your local `index.html` path (e.g. `C:\path\to\obs-dmm-display\index.html` or `/home/you/obs-dmm-display/index.html`).
+4. Set **Width**/**Height** to 322 / 157, and enable a transparent background in `index.html`/CSS if you want it to blend into your scene.
+5. Leave **"Shutdown source when not visible"** and **"Refresh browser when scene becomes active"** unchecked — the page needs to keep polling `/data` in the background even when the source isn't the active scene.
+6. If OBS is running on a different machine than the Flask app, use the app's `http://<host>:8080` address in a **URL** Browser Source instead of a local file, and make sure port 8080 is reachable from the OBS machine.
 
 ## Development
 
