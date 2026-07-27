@@ -1,16 +1,14 @@
 import os
+import pathlib
 import threading
 import time
 from typing import Any, Dict, Optional
 
-from flask import Flask, jsonify
-from flask_cors import CORS  # Allows local HTML files to read this API safely
+import webview
 
 from drivers import ut161b, ut8802e
 
 DEFAULT_MEASUREMENT = {"value": "---", "unit": "", "mode": "Disconnected", "range": ""}
-
-latest_measurement = dict(DEFAULT_MEASUREMENT)
 
 
 class MeasurementStore:
@@ -29,20 +27,22 @@ class MeasurementStore:
 store = MeasurementStore()
 
 
+class MeasurementAPI:
+    """Exposed to JavaScript via window.pywebview.api"""
+
+    def get_measurement(self) -> Dict[str, Any]:
+        return store.snapshot()
+
+
 def update_measurement(measurement: Optional[Dict[str, Any]]) -> None:
     store.update(measurement)
-    global latest_measurement
-    latest_measurement = store.measurement
 
 
 def worker_for_driver(driver: Any, interval: float = 0.3) -> None:
     while True:
         try:
             result = driver.read_measurement()
-            if result is not None:
-                update_measurement(result)
-            else:
-                update_measurement(None)
+            update_measurement(result if result is not None else None)
         except Exception as exc:
             print(f"[Hardware] status: {exc}. Retrying in 2s...")
             update_measurement(None)
@@ -56,15 +56,6 @@ def worker_for_driver(driver: Any, interval: float = 0.3) -> None:
         time.sleep(interval)
 
 
-app = Flask(__name__)
-CORS(app)  # This allows your local HTML file to fetch data from Flask safely
-
-
-@app.route("/data")
-def get_data():
-    return jsonify(store.snapshot())
-
-
 def create_driver_for_mode(mode: str) -> Any:
     mode = mode.lower()
     if mode in {"ut161b", "ut161b_only", "single"}:
@@ -74,11 +65,31 @@ def create_driver_for_mode(mode: str) -> Any:
     raise ValueError(f"Unsupported device mode: {mode}")
 
 
-if __name__ == "__main__":
+def main() -> None:
     selected_mode = os.environ.get("DMM_MODE", "ut161b")
     driver = create_driver_for_mode(selected_mode)
-    driver_thread = threading.Thread(target=worker_for_driver, args=(driver, 0.3), daemon=True)
-    driver_thread.start()
 
-    print(f"\n🚀 API running on http://127.0.0.1:8080 using mode={selected_mode}")
-    app.run(host="127.0.0.1", port=8080, debug=False, use_reloader=False)
+    threading.Thread(
+        target=worker_for_driver,
+        args=(driver, 0.3),
+        daemon=True,
+    ).start()
+
+    html_path = pathlib.Path(__file__).parent / "templates" / "index.html"
+
+    webview.create_window(
+        title="Meter Overlay",
+        url=html_path.as_uri(),
+        js_api=MeasurementAPI(),
+        frameless=True,
+        transparent=True,
+        resizable=False,
+        width=322,
+        height=157,
+    )
+
+    webview.start()
+
+
+if __name__ == "__main__":
+    main()

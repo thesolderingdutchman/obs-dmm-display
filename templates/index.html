@@ -16,6 +16,7 @@
         font-family: "Courier New", Courier, monospace;
         overflow: hidden;
       }
+
       .overlay-container {
         display: inline-flex;
         position: relative;
@@ -412,13 +413,8 @@
       }
 
       function updateDMM() {
-        fetch("http://127.0.0.1:8080/data")
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`);
-            }
-            return response.json();
-          })
+        window.pywebview.api
+          .get_measurement()
           .then((data) => {
             const modeText = data.mode || "Offline";
             const valueText = data.value || "---";
@@ -485,9 +481,19 @@
           });
       }
 
-      resetSparkline();
-      updateDMM();
-      setInterval(updateDMM, 250);
+      // pywebview injects window.pywebview once the DOM is ready but the bridge
+      // may not be available on the very first tick — wait for it before polling.
+      function waitForBridgeThenStart() {
+        if (window.pywebview && window.pywebview.api) {
+          resetSparkline();
+          updateDMM();
+          setInterval(updateDMM, 250);
+        } else {
+          setTimeout(waitForBridgeThenStart, 50);
+        }
+      }
+
+      waitForBridgeThenStart();
     </script>
   </body>
 </html>
