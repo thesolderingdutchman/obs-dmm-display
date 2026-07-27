@@ -1,4 +1,4 @@
 Flask
 Flask-Cors
 pycp2110
-hid
+hidapi

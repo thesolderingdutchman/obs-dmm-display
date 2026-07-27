@@ -2,13 +2,6 @@
 
 A small Flask-based display server for reading measurements from a supported multimeter and exposing them over HTTP for a local overlay or dashboard.
 
-## Supported modes
-
-Run the app with a single selected meter mode at startup:
-
-- `DMM_MODE=ut161b python dmm.py`
-- `DMM_MODE=ut8802e python dmm.py`
-
 ## Current status
 
 ### UT161B
@@ -69,14 +62,36 @@ The payload contains the latest normalized measurement, for example:
    - **macOS:** `brew install hidapi`
    - **Windows:** no separate install needed — a prebuilt binary is bundled
 
-2. Install Python dependencies:
+2. Create and activate a virtual environment:
 
+```bash
+   python3 -m venv .venv
+
+   # macOS/Linux
+   source .venv/bin/activate
+   # Windows (cmd)
+   .venv\Scripts\activate
+   # Windows (PowerShell)
+   .venv\Scripts\Activate.ps1
+```
+
+3. Install Python dependencies:
+
+```bash
    pip install -r requirements.txt
+```
 
-3. **Linux only:** the multimeter's USB device usually isn't accessible to a
+4. **Linux only:** the multimeter's USB device usually isn't accessible to a
    non-root user by default. Add a udev rule (see
    https://github.com/libusb/hidapi/blob/master/udev/) or run with `sudo`
    for testing.
+
+## Running the tool
+
+Run the app with a single selected meter mode at startup:
+
+- `DMM_MODE=ut161b python dmm.py`
+- `DMM_MODE=ut8802e python dmm.py`
 
 ## Development
 
