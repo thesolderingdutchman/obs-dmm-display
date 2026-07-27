@@ -1,0 +1,493 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --short-color: #00ff00;
+        --not-short-color: #ff0000;
+        --short-text-shadow: rgba(0, 255, 0, 0.8);
+      }
+
+      body {
+        background: transparent;
+        margin: 0;
+        padding: 10px;
+        font-family: "Courier New", Courier, monospace;
+        overflow: hidden;
+      }
+      .overlay-container {
+        display: inline-flex;
+        position: relative;
+        flex-direction: column;
+        align-items: stretch;
+        width: 250px;
+        background-color: rgba(0, 0, 0, 0.75);
+        padding: 12px 24px;
+        border-radius: 8px;
+        border: 2px solid #00ffcc;
+        box-shadow: 0 0 15px rgba(0, 255, 204, 0.4);
+        transition: all 0.3s ease;
+      }
+      .overlay-container.offline {
+        border-color: #ff3333;
+        box-shadow: 0 0 15px rgba(255, 51, 51, 0.4);
+      }
+      .overlay-container.offline .value {
+        color: #ff3333;
+        text-shadow: 0 0 8px rgba(255, 51, 51, 0.8);
+      }
+      .overlay-container.offline .mode {
+        color: #ff8888;
+      }
+      .overlay-container.short {
+        border-color: var(--short-color);
+        box-shadow: 0 0 24px var(--short-text-shadow);
+      }
+      .overlay-container.cont-mode:after {
+        content: " ";
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 100px;
+        height: 10px;
+        border-radius: 0 0 50% 50%;
+        background: rgba(0, 255, 204, 0.2);
+      }
+      .overlay-container.cont-mode.short:after {
+        background: var(--short-color);
+      }
+      .overlay-container.cont-mode.not-short:after {
+        background: var(--not-short-color);
+      }
+      .overlay-container.short .value,
+      .overlay-container.short .unit {
+        color: var(--short-color);
+        text-shadow: 0 0 12px var(--short-text-shadow);
+      }
+      .overlay-container.short .mode {
+        color: #ffaaaa;
+      }
+      .top-row {
+        display: inline-flex;
+        align-items: baseline;
+      }
+      .mode-wrapper {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        margin-right: 15px;
+        align-self: flex-end;
+        margin-bottom: 10px;
+        flex: 1;
+      }
+      .mode-icon {
+        display: none;
+        width: 18px;
+        height: 18px;
+        margin-bottom: 4px;
+        transform: rotate(90deg);
+      }
+      .mode {
+        flex: 1;
+        font-size: 16px;
+        color: #ffaa00;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+      .cont-mode .mode-icon {
+        display: inline-block;
+      }
+      .value {
+        font-size: 48px;
+        color: #00ffcc;
+        font-weight: bold;
+        text-shadow: 0 0 8px rgba(0, 255, 204, 0.8);
+        min-width: 140px;
+        text-align: right;
+      }
+      .unit {
+        font-size: 28px;
+        color: #00ffcc;
+        margin-left: 8px;
+        font-weight: bold;
+      }
+      .sparkline-container {
+        margin-top: 12px;
+        width: 100%;
+        height: 40px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(0, 255, 204, 0.2);
+        border-radius: 6px;
+        overflow: hidden;
+        position: relative;
+      }
+      .sparkline {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .sparkline path {
+        fill: transparent;
+        stroke: #00ffcc;
+        stroke-width: 1.6;
+        vector-effect: non-scaling-stroke;
+        stroke-linecap: round;
+      }
+      .sparkline line {
+        stroke: #00ffcc;
+        vector-effect: non-scaling-stroke;
+        stroke-linecap: round;
+      }
+      .sparkline-grid line {
+        stroke: rgba(255, 255, 255, 0.15);
+        stroke-width: 1;
+        vector-effect: non-scaling-stroke;
+      }
+      .sparkline-labels {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      .sparkline-label {
+        position: absolute;
+        color: #00ffcc;
+        font-size: 16px;
+        line-height: 1;
+        font-family: inherit;
+      }
+      .sparkline-label-max {
+        top: 0px;
+        left: 2px;
+      }
+      .sparkline-label-zero {
+        opacity: 0;
+        left: 2px;
+        transform: translateY(-50%);
+      }
+      .sparkline-label-min {
+        bottom: 0px;
+        left: 2px;
+      }
+      .sparkline line.sparkline-zero-line {
+        stroke: #00ffcc;
+        stroke-width: 1.5;
+        stroke-dasharray: 4, 4;
+        vector-effect: non-scaling-stroke;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="wrapper" class="overlay-container">
+      <div class="top-row">
+        <div id="modeWrapper" class="mode-wrapper">
+          <img
+            id="modeIcon"
+            class="mode-icon"
+            src="cont.svg"
+            alt="Continuity icon"
+            aria-hidden="true"
+          />
+          <span id="mode" class="mode">---</span>
+        </div>
+        <span id="value" class="value">---</span>
+        <span id="unit" class="unit"></span>
+      </div>
+      <div
+        id="sparklineContainer"
+        class="sparkline-container"
+        aria-label="Measurement history"
+      >
+        <svg
+          id="sparkline"
+          class="sparkline"
+          viewBox="0 0 100 30"
+          preserveAspectRatio="none"
+        ></svg>
+        <div class="sparkline-labels">
+          <span
+            id="sparklineMax"
+            class="sparkline-label sparkline-label-max"
+          ></span>
+          <span id="sparklineZero" class="sparkline-label sparkline-label-zero"
+            >0</span
+          >
+          <span
+            id="sparklineMin"
+            class="sparkline-label sparkline-label-min"
+          ></span>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const sparklineState = {
+        history: [],
+        lastMode: null,
+        maxPoints: 40,
+        currentUnit: "",
+      };
+
+      function parseNumericValue(rawValue) {
+        const normalized = String(rawValue).trim().replace(",", ".");
+        const number = Number(normalized);
+        return Number.isFinite(number) ? number : null;
+      }
+
+      function formatSparklineValue(value, unit) {
+        if (!Number.isFinite(value)) {
+          return "";
+        }
+        const text = String(value.toFixed(3))
+          .replace(/\.\d*?0+$/, "")
+          .replace(/\.$/, "");
+        return unit ? `${text} ${unit}` : text;
+      }
+
+      function resetSparkline() {
+        sparklineState.history = [];
+        sparklineState.lastMode = null;
+        renderSparkline();
+      }
+
+      function addSparklineValue(value, mode) {
+        if (mode !== sparklineState.lastMode) {
+          sparklineState.history = [];
+          sparklineState.lastMode = mode;
+        }
+        if (sparklineState.history.length >= sparklineState.maxPoints) {
+          sparklineState.history.shift();
+        }
+        sparklineState.history.push(value);
+        renderSparkline();
+      }
+
+      function renderSparkline() {
+        const svg = document.getElementById("sparkline");
+        const history = sparklineState.history;
+        svg.innerHTML = "";
+        document.getElementById("sparklineMax").innerText = "";
+        document.getElementById("sparklineZero").innerText = "";
+        document.getElementById("sparklineMin").innerText = "";
+        if (!history.length) {
+          return;
+        }
+
+        const numericHistory = history.filter((value) => value !== null);
+        if (!numericHistory.length) {
+          return;
+        }
+
+        const rawMin = Math.min(...numericHistory);
+        const rawMax = Math.max(...numericHistory);
+        const minValue = Math.min(rawMin, 0);
+        const maxValue = Math.max(rawMax, 0);
+        document.getElementById("sparklineMax").innerText =
+          formatSparklineValue(maxValue, sparklineState.currentUnit);
+        document.getElementById("sparklineMin").innerText =
+          formatSparklineValue(minValue, sparklineState.currentUnit);
+        const zeroY =
+          30 - ((0 - minValue) / Math.max(maxValue - minValue, 1)) * 28 - 1;
+        const zeroLabel = document.getElementById("sparklineZero");
+        zeroLabel.innerText = "0";
+        zeroLabel.style.top = `${Math.min(Math.max(zeroY, 0), 30)}px`;
+
+        const range = maxValue - minValue || 1;
+        const pointCount = history.length;
+        const stepX = 100 / Math.max(sparklineState.maxPoints - 1, 1);
+        const startOffset = Math.max(sparklineState.maxPoints - pointCount, 0);
+
+        const grid = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "g",
+        );
+        grid.setAttribute("class", "sparkline-grid");
+        const horizontalY = [4, 15, 26];
+        horizontalY.forEach((y) => {
+          const gridLine = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "line",
+          );
+          gridLine.setAttribute("x1", "0");
+          gridLine.setAttribute("y1", y.toFixed(2));
+          gridLine.setAttribute("x2", "100");
+          gridLine.setAttribute("y2", y.toFixed(2));
+          grid.appendChild(gridLine);
+        });
+        [20, 40, 60, 80].forEach((x) => {
+          const gridLine = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "line",
+          );
+          gridLine.setAttribute("x1", x.toString());
+          gridLine.setAttribute("y1", "0");
+          gridLine.setAttribute("x2", x.toString());
+          gridLine.setAttribute("y2", "30");
+          grid.appendChild(gridLine);
+        });
+        svg.appendChild(grid);
+
+        const zeroLine = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "line",
+        );
+        zeroLine.setAttribute("class", "sparkline-zero-line");
+        zeroLine.setAttribute("x1", "0");
+        zeroLine.setAttribute("y1", zeroY.toFixed(2));
+        zeroLine.setAttribute("x2", "100");
+        zeroLine.setAttribute("y2", zeroY.toFixed(2));
+        svg.appendChild(zeroLine);
+
+        let currentSegment = [];
+        const path = document.createElementNS(
+          "http://www.w3.org/2000/svg",
+          "path",
+        );
+        let pathD = "";
+        history.forEach((value, index) => {
+          const x = (startOffset + index) * stepX;
+          if (value === null) {
+            if (currentSegment.length) {
+              pathD += (pathD ? " " : "") + currentSegment.join(" ");
+              currentSegment = [];
+            }
+            return;
+          }
+          const y = 30 - ((value - minValue) / range) * 28 - 1;
+          if (!currentSegment.length) {
+            currentSegment.push(`M ${x.toFixed(2)} ${y.toFixed(2)}`);
+          } else {
+            currentSegment.push(`L ${x.toFixed(2)} ${y.toFixed(2)}`);
+          }
+        });
+        if (currentSegment.length) {
+          pathD += (pathD ? " " : "") + currentSegment.join(" ");
+        }
+        if (!pathD) {
+          return;
+        }
+        path.setAttribute("d", pathD);
+        svg.appendChild(path);
+
+        const lastIndex = history.length - 1;
+        const lastValue = history[lastIndex];
+        if (lastValue !== null) {
+          const lastX = (startOffset + lastIndex) * stepX;
+          const lastY = 30 - ((lastValue - minValue) / range) * 28 - 1;
+          const dot = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "line",
+          );
+          dot.setAttribute("x1", lastX.toFixed(2));
+          dot.setAttribute("y1", lastY.toFixed(2));
+          dot.setAttribute("x2", lastX.toFixed(2));
+          dot.setAttribute("y2", lastY.toFixed(2));
+          dot.setAttribute("stroke-width", "4");
+          dot.setAttribute("stroke-linecap", "round");
+          dot.setAttribute("vector-effect", "non-scaling-stroke");
+          svg.appendChild(dot);
+        }
+      }
+
+      function isContinuityShort(mode, value, unit) {
+        if (mode !== "Cont") {
+          return false;
+        }
+        if (!Number.isFinite(value) || unit !== "Ω") {
+          return false;
+        }
+        return value <= 50;
+      }
+
+      function isContinuityNotShort(mode, value, unit) {
+        if (mode !== "Cont") {
+          return false;
+        }
+        if (!Number.isFinite(value) || unit !== "Ω") {
+          return false;
+        }
+        return value >= 50;
+      }
+
+      function updateDMM() {
+        fetch("http://127.0.0.1:8080/data")
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+            return response.json();
+          })
+          .then((data) => {
+            const modeText = data.mode || "Offline";
+            const valueText = data.value || "---";
+            const unitText = data.unit || "";
+
+            console.debug(data.value);
+
+            document.getElementById("mode").innerText = modeText;
+            document.getElementById("value").innerText = valueText;
+            document.getElementById("unit").innerText = unitText;
+            sparklineState.currentUnit = unitText;
+
+            const container = document.getElementById("wrapper");
+            const modeWrapper = document.getElementById("modeWrapper");
+            const modeIcon = document.getElementById("modeIcon");
+            const numericValue = parseNumericValue(valueText);
+            const hasValue = Number.isFinite(numericValue);
+            const notShortActive = isContinuityNotShort(
+              modeText,
+              numericValue,
+              unitText,
+            );
+            const shortActive = isContinuityShort(
+              modeText,
+              numericValue,
+              unitText,
+            );
+            if (shortActive) {
+              container.classList.add("short");
+            } else {
+              container.classList.remove("short");
+            }
+            if (notShortActive) {
+              container.classList.add("not-short");
+            } else {
+              container.classList.remove("not-short");
+            }
+
+            if (modeText === "Cont") {
+              container.classList.add("cont-mode");
+              modeWrapper.classList.add("cont-mode");
+              modeIcon.style.display = "inline-block";
+            } else {
+              container.classList.remove("cont-mode");
+              modeWrapper.classList.remove("cont-mode");
+              modeIcon.style.display = "none";
+            }
+
+            if (modeText === "Offline" || modeText === "Disconnected") {
+              container.classList.add("offline");
+              addSparklineValue(null, modeText);
+            } else {
+              container.classList.remove("offline");
+              addSparklineValue(numericValue, modeText);
+            }
+          })
+          .catch((err) => {
+            console.error("API Error:", err);
+            document.getElementById("wrapper").classList.add("offline");
+            document.getElementById("mode").innerText = "Offline";
+            document.getElementById("value").innerText = "---";
+            document.getElementById("unit").innerText = "";
+            addSparklineValue(null, "Offline");
+          });
+      }
+
+      resetSparkline();
+      updateDMM();
+      setInterval(updateDMM, 250);
+    </script>
+  </body>
+</html>
