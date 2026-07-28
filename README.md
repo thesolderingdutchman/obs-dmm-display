@@ -11,29 +11,35 @@ A small Flask-based display server for reading measurements from a supported mul
 - Uses HID USB communication.
 - The current implementation sends initialization requests and then polls for live measurement packets.
 
-### UT8802E (WIP)
+### UT8802E
 
-- The parser and driver structure are implemented but not verified.
-- The driver attempts to open a real CP2110-based USB/UART connection when the meter is available.
+- Verified working on real hardware.
+- Uses the CP2110 USB/HID bridge directly via `hidapi`.
 - If no compatible device is present, the app stays disconnected instead of crashing.
 - A packet-hex fallback is also available for testing the parser without hardware.
 
-#### Logging for 8802E
+### UT8803E (preview)
 
-Run the following command to log every frame's hex (plus the decoded mode byte, so we know which capture is which) to a file.
+- Driver structure is implemented but not yet verified against real hardware.
+- Uses the `pycp2110` library for CP2110 communication.
+- A packet-hex fallback is available for testing the parser without hardware.
+
+#### Capture logging (UT8802E / UT8803E)
+
+Run the following command to log every raw frame's hex to a file:
 
 ```bash
-DMM_8802E_CAPTURE_LOG=ut8802e_capture.log DMM_MODE=ut8802e python dmm.py
+DMM_8802E_CAPTURE_LOG=capture.log DMM_MODE=ut8802e python dmm.py
 ```
 
-Switch the meter to hFE (or SCR, or whichever mode you want the code for), let it log a few readings.log. Each line shows the mode byte plus the full frame hex.
+Each line shows the timestamp and the full frame hex, useful for diagnosing unknown mode codes or verifying parser behaviour against real hardware.
 
-#### Optional 8802E test input
+#### Optional test input (UT8802E / UT8803E)
 
 If you have a packet captured from the instrument, you can feed it in as hex:
 
 ```bash
-DMM_MODE=ut8802e DMM_8802E_PACKET_HEX=0201000000000000 python dmm.py
+DMM_MODE=ut8802e DMM_8802E_PACKET_HEX=ac0304053031323300 python dmm.py
 ```
 
 This is useful for validating the parsing logic without needing the device connected.
@@ -57,7 +63,7 @@ The payload contains the latest normalized measurement, for example:
 
 ## Installation
 
-1. Install the native HID library (required by both `pycp2110` and `hid`):
+1. Install the native HID library (required by both `pycp2110` and `hidapi`):
    - **Debian/Ubuntu:** `sudo apt install libhidapi-hidraw0`
    - **Fedora:** `sudo dnf install hidapi`
    - **Arch:** `sudo pacman -S hidapi`
@@ -67,20 +73,20 @@ The payload contains the latest normalized measurement, for example:
 2. Create and activate a virtual environment:
 
 ```bash
-   python3 -m venv .venv
+python3 -m venv .venv
 
-   # macOS/Linux
-   source .venv/bin/activate
-   # Windows (cmd)
-   .venv\Scripts\activate
-   # Windows (PowerShell)
-   .venv\Scripts\Activate.ps1
+# macOS/Linux
+source .venv/bin/activate
+# Windows (cmd)
+.venv\Scripts\activate
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
 ```
 
 3. Install Python dependencies:
 
 ```bash
-   pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
 4. **Linux only:** the multimeter's USB device usually isn't accessible to a
@@ -94,8 +100,9 @@ Run the app with a single selected meter mode at startup:
 
 - `DMM_MODE=ut161b python dmm.py`
 - `DMM_MODE=ut8802e python dmm.py`
+- `DMM_MODE=ut8803e python dmm.py`
 
-Now open the index.html file in a browser of your choice and it should display results.
+Now open the `index.html` file in a browser of your choice and it should display results.
 
 ## OBS Setup
 

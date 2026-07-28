@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from flask import Flask, jsonify
 from flask_cors import CORS  # Allows local HTML files to read this API safely
 
-from drivers import ut161b, ut8802e
+from drivers import ut161b, ut8802e, ut8803e
 
 DEFAULT_MEASUREMENT = {"value": "---", "unit": "", "mode": "Disconnected", "range": ""}
 
@@ -71,13 +71,20 @@ def create_driver_for_mode(mode: str) -> Any:
         return ut161b.Driver()
     if mode in {"ut8802e", "ut8802e_only"}:
         return ut8802e.Driver(packet_source=ut8802e.build_packet_source())
+    if mode in {"ut8803e"}:
+        return ut8803e.Driver(packet_source=ut8803e.build_packet_source())
     raise ValueError(f"Unsupported device mode: {mode}")
 
 
 if __name__ == "__main__":
     selected_mode = os.environ.get("DMM_MODE", "ut161b")
     driver = create_driver_for_mode(selected_mode)
-    driver_thread = threading.Thread(target=worker_for_driver, args=(driver, 0.3), daemon=True)
+    worker_interval = getattr(driver, "worker_interval", 0.3)
+    driver_thread = threading.Thread(
+        target=worker_for_driver,
+        args=(driver, worker_interval),
+        daemon=True,
+    )
     driver_thread.start()
 
     print(f"\n🚀 API running on http://127.0.0.1:8080 using mode={selected_mode}")
