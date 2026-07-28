@@ -1,6 +1,6 @@
-# DMM Display
+# OBS DMM Display
 
-A small Flask-based display server for reading measurements from a supported multimeter and exposing them over HTTP for a local overlay or dashboard.
+A desktop overlay app for reading measurements from a supported multimeter and displaying them as a transparent overlay for use with OBS or as a standalone window.
 
 ![DMM UI screenshot](dmm.png)
 
@@ -44,23 +44,6 @@ DMM_MODE=ut8802e DMM_8802E_PACKET_HEX=ac0304053031323300 python dmm.py
 
 This is useful for validating the parsing logic without needing the device connected.
 
-## API
-
-The app exposes a simple JSON endpoint:
-
-- `http://127.0.0.1:8080/data`
-
-The payload contains the latest normalized measurement, for example:
-
-```json
-{
-  "value": "12.34",
-  "unit": "V",
-  "mode": "DCV",
-  "range": ""
-}
-```
-
 ## Installation
 
 1. Install the native HID library (required by both `pycp2110` and `hidapi`):
@@ -94,7 +77,7 @@ pip install -r requirements.txt
    https://github.com/libusb/hidapi/blob/master/udev/) or run with `sudo`
    for testing.
 
-## Running the tool
+## Running the app
 
 Run the app with a single selected meter mode at startup:
 
@@ -102,18 +85,76 @@ Run the app with a single selected meter mode at startup:
 - `DMM_MODE=ut8802e python dmm.py`
 - `DMM_MODE=ut8803e python dmm.py`
 
-Now open the `index.html` file in a browser of your choice and it should display results.
+The overlay window opens automatically.
+
+## Building a standalone app
+
+The app can be packaged into a standalone executable using PyInstaller. No Python installation required on the target machine.
+
+> **Note:** builds are platform-specific. Run the build on the OS you want to target: macOS on a Mac, Windows on a Windows PC.
+
+### Prerequisites
+
+Install PyInstaller into your venv:
+
+```bash
+pip install pyinstaller
+```
+
+### macOS
+
+```bash
+pyinstaller \
+  --name "OBS DMM Display" \
+  --windowed \
+  --onefile \
+  --collect-all webview \
+  --add-data "templates:templates" \
+  --add-data "drivers:drivers" \
+  dmm.py
+```
+
+The built app appears at `dist/OBS DMM Display.app`.
+
+### Windows (untested)
+
+Run this in Command Prompt or PowerShell (not Git Bash):
+
+```bat
+pyinstaller ^
+  --name "OBS DMM Display" ^
+  --windowed ^
+  --onefile ^
+  --collect-all webview ^
+  --add-data "templates;templates" ^
+  --add-data "drivers;drivers" ^
+  dmm.py
+```
+
+The built executable appears at `dist\OBS DMM Display.exe`.
+
+> **Windows note:** pywebview on Windows requires Microsoft Edge WebView2, which ships with Windows 11 and most up-to-date Windows 10 installs. If a user gets an error about a missing WebView2 runtime, they can install it from [Microsoft's site](https://developer.microsoft.com/microsoft-edge/webview2/).
+
+### Notes
+
+- The `--windowed` flag suppresses the terminal/console window.
+- The `--onefile` flag produces a single executable. Omit it if you prefer a folder-based dist (faster startup, easier to inspect).
+- After building, test the executable on a clean machine or VM before distributing. pywebview occasionally needs a system library that isn't bundled automatically.
 
 ## OBS Setup
 
-To use this as a live overlay in OBS:
+To use the overlay in OBS, use the pre-built app or run it from source. The window is transparent and frameless by design.
 
-1. Start the app (`DMM_MODE=... python dmm.py`) and leave it running in the background.
-2. In OBS, add a new **Browser Source** to your scene.
-3. Under **Local file**, check the box and point it at your local `index.html` path (e.g. `C:\path\to\obs-dmm-display\index.html` or `/home/you/obs-dmm-display/index.html`).
-4. Set **Width**/**Height** to 322 / 157, and enable a transparent background in `index.html`/CSS if you want it to blend into your scene.
-5. Leave **"Shutdown source when not visible"** and **"Refresh browser when scene becomes active"** unchecked — the page needs to keep polling `/data` in the background even when the source isn't the active scene.
-6. If OBS is running on a different machine than the Flask app, use the app's `http://<host>:8080` address in a **URL** Browser Source instead of a local file, and make sure port 8080 is reachable from the OBS machine.
+1. Launch the app (`DMM_MODE=... python dmm.py` or the built executable).
+2. In OBS, add a **Window Capture** source and select the "OBS DMM Display" window.
+3. Use a **Chroma Key** or **Color Key** filter if needed, though the window background is already transparent on supported platforms.
+
+Alternatively, if you prefer a Browser Source:
+
+1. Keep the app running. It also serves the overlay at `http://127.0.0.1:8080`.
+2. In OBS, add a **Browser Source** pointed at `http://127.0.0.1:8080`.
+3. Set **Width**/**Height** to 322 / 157.
+4. Leave **"Shutdown source when not visible"** and **"Refresh browser when scene becomes active"** unchecked.
 
 ## Development
 
@@ -131,3 +172,5 @@ This project's architecture and parts of its code are adapted from:
 - [philpagel/ut8803e](https://github.com/philpagel/ut8803e) (BSD-3-Clause License)
 
 See `LICENSE.md` for the full license texts.
+
+Also thanks to [Mainboard Medic](https://www.youtube.com/@MainboardMedic) for testing and updating the ut8802e driver.
