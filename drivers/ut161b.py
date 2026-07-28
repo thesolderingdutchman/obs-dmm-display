@@ -85,6 +85,8 @@ def parse_packet(packet: bytes) -> Optional[Dict[str, Any]]:
 
 
 class Driver:
+    worker_interval = 0.3  # polled via handle_request, not hardware-paced
+
     def __init__(self) -> None:
         self.device: Optional[Any] = None
 

@@ -1,60 +1,235 @@
-# Based on/inspired by https://github.com/philpagel/ut8803e
+"""UNI-T UT8802E USB/HID driver.
+
+The UT8802E uses fixed eight-byte UART frames behind a Silicon Labs CP2110
+USB/HID bridge.  It does not use the variable-length AB CD framing used by the
+UT8803E.
+"""
+
 import os
+import struct
 import time
 from typing import Any, Dict, Optional
-import cp2110
 
-# Set DMM_8802E_CAPTURE_LOG=/path/to/file.log to append every raw frame's hex to
-# that file, tagged with its mode byte. Useful for capturing packets for modes
-# that aren't mapped yet (e.g. put the meter in hFE mode, take a reading, then
-# check the log for the mode byte it used).
+import hid
+
+
 CAPTURE_LOG_PATH = os.environ.get("DMM_8802E_CAPTURE_LOG")
+FRAME_MAGIC = 0xAC
+FRAME_LENGTH = 8
+FRAME_WAIT_SECONDS = 0.45
+STALE_MEASUREMENT_SECONDS = 0.75
+CP2110_VID = 0x10C4
+CP2110_PID = 0xEA80
+REPORT_UART_ENABLE = 0x41
+REPORT_PURGE_FIFOS = 0x43
+REPORT_UART_CONFIG = 0x50
+STATUS_OVERLOAD = 0x40
+
+
+# mode code: (display mode, display unit, selected range)
+MODE_INFO = {
+    # DC voltage
+    0x01: ("DCmV", "mV", "200mV"),
+    0x03: ("DCV", "V", "2V"),
+    0x04: ("DCV", "V", "20V"),
+    0x05: ("DCV", "V", "200V"),
+    0x06: ("DCV", "V", "1000V"),
+    # AC voltage
+    0x09: ("ACV", "V", "2V"),
+    0x0A: ("ACV", "V", "20V"),
+    0x0B: ("ACV", "V", "200V"),
+    0x0C: ("ACV", "V", "750V"),
+    # DC current
+    0x0D: ("DCµA", "µA", "200µA"),
+    0x0E: ("DCmA", "mA", "2mA"),
+    0x11: ("DCmA", "mA", "20mA"),
+    0x12: ("DCmA", "mA", "200mA"),
+    0x16: ("DCA", "A", "20A"),
+    # AC current
+    0x10: ("ACmA", "mA", "2mA"),
+    0x13: ("ACmA", "mA", "20mA"),
+    0x14: ("ACmA", "mA", "200mA"),
+    0x18: ("ACA", "A", "20A"),
+    # Resistance
+    0x19: ("RES", "Ω", "200Ω"),
+    0x1A: ("RES", "kΩ", "2kΩ"),
+    0x1B: ("RES", "kΩ", "20kΩ"),
+    0x1C: ("RES", "kΩ", "200kΩ"),
+    0x1D: ("RES", "MΩ", "2MΩ"),
+    0x1F: ("RES", "MΩ", "200MΩ"),
+    # Other functions
+    0x22: ("Duty", "%", ""),
+    0x23: ("Diode", "V", ""),
+    0x24: ("Cont", "Ω", ""),
+    0x25: ("hFE", "", ""),
+    0x27: ("CAP", "nF", ""),
+    0x28: ("CAP", "µF", ""),
+    0x29: ("CAP", "mF", ""),
+    0x2A: ("SCR", "V", ""),
+    0x2B: ("FREQ", "Hz", ""),
+    0x2C: ("FREQ", "kHz", ""),
+    0x2D: ("FREQ", "MHz", ""),
+}
 
 
 def log_capture(frame: bytes) -> None:
     if not CAPTURE_LOG_PATH:
         return
-    mode_byte = f"0x{frame[3]:02x}" if len(frame) > 3 else "?"
-    line = f"{time.strftime('%H:%M:%S')} mode={mode_byte} frame={frame.hex()}\n"
+    line = f"{time.strftime('%H:%M:%S')} frame={frame.hex()}\n"
     try:
-        with open(CAPTURE_LOG_PATH, "a") as f:
-            f.write(line)
+        with open(CAPTURE_LOG_PATH, "a", encoding="utf-8") as capture_file:
+            capture_file.write(line)
     except Exception as exc:
         print(f"[Capture] failed to write {CAPTURE_LOG_PATH}: {exc}")
 
+
+def log_raw_report(report: bytes) -> None:
+    if not CAPTURE_LOG_PATH:
+        return
+    line = f"{time.strftime('%H:%M:%S')} hid_report={report.hex()}\n"
+    try:
+        with open(CAPTURE_LOG_PATH, "a", encoding="utf-8") as capture_file:
+            capture_file.write(line)
+    except Exception as exc:
+        print(f"[Capture] failed to write {CAPTURE_LOG_PATH}: {exc}")
+
+
+def verify_checksum(frame: bytes) -> bool:
+    """UT8802E checksum is the low seven bits of the first seven bytes."""
+    return (
+        len(frame) == FRAME_LENGTH
+        and frame[0] == FRAME_MAGIC
+        and (sum(frame[:7]) & 0x7F) == frame[7]
+    )
+
+
+def _decode_bcd(value: int) -> Optional[int]:
+    high = (value >> 4) & 0x0F
+    low = value & 0x0F
+    if high > 9 or low > 9:
+        return None
+    return high * 10 + low
+
+
+def parse_packet(frame: bytes) -> Optional[Dict[str, Any]]:
+    """Decode one native UT8802E eight-byte measurement frame."""
+    if len(frame) != FRAME_LENGTH or frame[0] != FRAME_MAGIC:
+        return None
+    if not verify_checksum(frame):
+        print("[Hardware] UT8802E checksum mismatch, dropping packet")
+        return None
+
+    mode_name, unit, range_name = MODE_INFO.get(
+        frame[1],
+        (f"UNKNOWN (0x{frame[1]:02x})", "", ""),
+    )
+
+    # Captured UT8802E packets set bit 6 of the status byte when the
+    # input is open/over-range. The digit bytes still contain a changing
+    # numeric pattern in that state and must not be displayed.
+    if frame[6] & STATUS_OVERLOAD:
+        return {
+            "value": "OL",
+            "unit": unit,
+            "mode": mode_name,
+            "range": range_name,
+        }
+
+    low_digits = _decode_bcd(frame[2])
+    middle_digits = _decode_bcd(frame[3])
+    high_digit = frame[4] & 0x0F
+    decimal_places = frame[5] - ord("0")
+
+    # The meter uses a non-numeric digit pattern for an open input/overload.
+    # It can also encode the first count above its 19,999-count display range.
+    # Both cases must be shown as OL instead of retaining the previous reading.
+    invalid_digits = (
+        low_digits is None
+        or middle_digits is None
+        or high_digit > 9
+        or not 0 <= decimal_places <= 9
+    )
+    raw_value = 0
+    if not invalid_digits:
+        raw_value = low_digits + middle_digits * 100 + high_digit * 10000
+
+    if invalid_digits or raw_value > 19999:
+        return {
+            "value": "OL",
+            "unit": unit,
+            "mode": mode_name,
+            "range": range_name,
+        }
+
+    numeric_value = raw_value / (10 ** decimal_places)
+    if frame[6] & 0x80:
+        numeric_value = -numeric_value
+
+    value_text = f"{numeric_value:.{decimal_places}f}"
+
+    return {
+        "value": value_text,
+        "unit": unit,
+        "mode": mode_name,
+        "range": range_name,
+    }
+
+
 class CP2110Transport:
     def __init__(self) -> None:
-        self.device = None
+        self.device: Optional[Any] = None
         self._buffer = bytearray()
 
     def connect(self) -> None:
         if self.device is not None:
             return
-        self.device = cp2110.CP2110Device()
-        self.device.set_uart_config(
-            cp2110.UARTConfig(
-                baud=9600,
-                parity=cp2110.PARITY.NONE,
-                flow_control=cp2110.FLOW_CONTROL.DISABLED,
-                data_bits=cp2110.DATA_BITS.EIGHT,
-                stop_bits=cp2110.STOP_BITS.SHORT,
+        if not hasattr(hid, "device"):
+            raise RuntimeError(
+                "Wrong 'hid' package loaded. Uninstall packages 'hid' and "
+                "'pycp2110'; keep the 'hidapi' wheel installed."
             )
+
+        self.device = hid.device()
+        self.device.open(CP2110_VID, CP2110_PID)
+
+        # CP2110 UART configuration: 9600 baud, 8 data bits, no parity,
+        # one stop bit, no flow control. This follows Silicon Labs AN434
+        # and pySerial's cython-hidapi CP2110 backend.
+        uart_config = struct.pack(
+            ">BLBBBB",
+            REPORT_UART_CONFIG,
+            9600,
+            0x00,
+            0x00,
+            0x03,
+            0x00,
         )
-        self.device.enable_uart()
+        self.device.send_feature_report(uart_config)
+        self.device.send_feature_report(
+            bytes((REPORT_UART_ENABLE, 0x01))
+        )
+        self.device.send_feature_report(
+            bytes((REPORT_PURGE_FIFOS, 0x03))
+        )
         print("[Hardware] UT8802E transport connected")
 
     def close(self) -> None:
         if self.device is None:
             return
         try:
-            self.device.purge_fifos()
+            self.device.send_feature_report(
+                bytes((REPORT_PURGE_FIFOS, 0x03))
+            )
+        except Exception:
+            pass
+        try:
             self.device.close()
         except Exception:
             pass
         self.device = None
+        self._buffer.clear()
 
     def read_packet(self) -> Optional[bytes]:
-        """Returns a full frame: signature(2) + length(1) + payload + checksum(2)."""
         if self.device is None:
             try:
                 self.connect()
@@ -62,185 +237,76 @@ class CP2110Transport:
                 print(f"[Hardware] UT8802E connection failed: {exc}")
                 return None
 
-        try:
-            self._buffer.extend(self.device.read(64))
-        except Exception as exc:
-            print(f"[Hardware] UT8802E read failed: {exc}")
-            self.close()
-            return None
+        # A CP2110 report begins with the exact UART payload length. cython-
+        # hidapi returns only the bytes received, unlike the old pyhidapi
+        # wrapper which exposed a 64-byte buffer containing stale tail data.
+        # Collect short reports until one complete eight-byte DMM frame exists.
+        deadline = time.monotonic() + FRAME_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                report = self.device.read(64, timeout_ms=100)
+            except Exception as exc:
+                print(f"[Hardware] UT8802E read failed: {exc}")
+                self.close()
+                return None
 
-        if len(self._buffer) < 16:
-            return None
-        start = self._buffer.find(b"\xab\xcd")
-        if start < 0:
-            self._buffer.clear()
-            return None
-        if start > 0:
-            del self._buffer[:start]
-        if len(self._buffer) < 16:
-            return None
+            if report:
+                report = bytes(report)
+                log_raw_report(report)
 
-        packet_length = self._buffer[2]
-        frame_length = packet_length + 3
-        if len(self._buffer) < frame_length:
-            return None
+                byte_count = report[0]
+                if not 1 <= byte_count <= 63:
+                    print(
+                        f"[Hardware] UT8802E invalid CP2110 report length: "
+                        f"{byte_count}"
+                    )
+                    continue
+                if len(report) < byte_count + 1:
+                    print(
+                        f"[Hardware] UT8802E truncated CP2110 report: "
+                        f"header says {byte_count}, HIDAPI returned only "
+                        f"{len(report) - 1} payload bytes"
+                    )
+                    continue
 
-        frame = bytes(self._buffer[:frame_length])
-        del self._buffer[:frame_length]
-        return frame
+                # On Windows, HIDAPI can return the complete 64-byte input
+                # buffer even when the CP2110 header announces fewer UART
+                # bytes. The tail is padding/stale memory and must be ignored.
+                self._buffer.extend(report[1 : byte_count + 1])
 
+            while len(self._buffer) >= FRAME_LENGTH:
+                try:
+                    start = self._buffer.index(FRAME_MAGIC)
+                except ValueError:
+                    self._buffer.clear()
+                    break
 
-def normalize_measurement(
-    value: str, unit: str, mode: str, range_value: str = "", flags: Optional[list] = None
-) -> Dict[str, Any]:
-    result = {
-        "value": value,
-        "unit": unit,
-        "mode": mode,
-        "range": range_value,
-    }
-    if flags:
-        result["flags"] = flags
-    return result
+                if start:
+                    del self._buffer[:start]
+                if len(self._buffer) < FRAME_LENGTH:
+                    break
 
+                frame = bytes(self._buffer[:FRAME_LENGTH])
+                log_capture(frame)
+                if verify_checksum(frame):
+                    del self._buffer[:FRAME_LENGTH]
+                    return frame
 
-# Unit/range strings depend on mode AND range together, not mode alone (e.g. ACV
-# range 0 = mV, range 1 = V, ...). Ported from the reference UT8803E device where
-# the mode lines up 1:1 with this driver's mode_code. NOT YET VERIFIED against a
-# real UT8802E capture.
-# 
-# TODO: Should sanity-check a few readings against the display.
-#
-# DCA (0x06) and ACA (0x07) are intentionally left out: the reference splits DC/AC
-# current into three separate modes (µA/mA/A) rather than one mode with multiple
-# ranges, so there's no direct table to port. These fall back to unit_map above.
-MODE_RANGE_TABLE = {
-    0x00: {"units": ["mV", "V", "V", "V", "V"], "ranges": ["600mV", "6V", "60V", "600V", "750V"]},
-    0x01: {"units": ["mV", "V", "V", "V", "V"], "ranges": ["600mV", "6V", "60V", "600V", "1000V"]},
-    0x02: {"units": ["Ω", "kΩ", "kΩ", "kΩ", "MΩ", "MΩ"], "ranges": ["600Ω", "6kΩ", "60kΩ", "600kΩ", "6MΩ", "60MΩ"]},
-    0x03: {"units": [""], "ranges": ["NA"]},
-    0x04: {"units": ["ΔV"], "ranges": ["NA"]},
-    0x05: {
-        "units": ["nF", "nF", "F", "µF", "µF", "µF", "mF"],
-        "ranges": ["6nF", "60nF", "600nF", "6µF", "60µF", "600µF", "6mF"],
-    },
-    0x08: {
-        "units": ["Hz", "kHz", "kHz", "kHz", "MHz", "MHz"],
-        "ranges": ["600Hz", "6kHz", "60kHz", "600kHz", "6MHz", "20MHz"],
-    },
-    0x09: {"units": ["%"] * 6, "ranges": ["600Hz", "6kHz", "60kHz", "600kHz", "6MHz", "20MHz"]},
-}
+                # A stray 0xAC was found. Shift and search for the next frame.
+                del self._buffer[0]
 
-
-def decode_range_index(range_code: int) -> Optional[int]:
-    """The range byte is an ASCII digit ('0'-'9'), same encoding as the reference
-    device's PaddedString range field — not a raw binary index."""
-    ch = chr(range_code)
-    return int(ch) if ch.isdigit() else None
-
-
-def verify_checksum(frame: bytes) -> bool:
-    """Checksum = sum of all bytes except the trailing 2-byte checksum, mod 65536."""
-    if len(frame) < 5:
-        return False
-    computed = sum(frame[:-2]) & 0xFFFF
-    received = int.from_bytes(frame[-2:], "big")
-    return computed == received
-
-
-def parse_packet(frame: bytes) -> Optional[Dict[str, Any]]:
-    # `frame` is the full frame from CP2110Transport: signature(2) + length(1) + payload + checksum(2).
-    if len(frame) < 21 or frame[0:2] != b"\xab\xcd":
         return None
-
-    if not verify_checksum(frame):
-        print("[Hardware] UT8802E checksum mismatch, dropping packet")
-        return None
-
-    payload = frame[3:-2]
-    if len(payload) < 16 or payload[0] != 0x02:
-        return None
-
-    mode_code = payload[1]
-    range_code = payload[2]
-    value_str = bytes(payload[3:9]).decode("ascii", errors="ignore").rstrip("\x00").strip()
-    stat = payload[9:16]
-
-    mode_map = {
-        0x00: "ACV",
-        0x01: "DCV",
-        0x02: "RES",
-        0x03: "Cont",
-        0x04: "Diode",
-        0x05: "CAP",
-        0x06: "DCA",
-        0x07: "ACA",
-        0x08: "FREQ",
-        0x09: "Duty",
-    }
-    # Flat fallback unit map, used for modes not covered by MODE_RANGE_TABLE below
-    # (currently DCA/ACA — see note on MODE_RANGE_TABLE for why).
-    unit_map = {
-        0x00: "V",
-        0x01: "V",
-        0x02: "Ω",
-        0x03: "Ω",
-        0x04: "V",
-        0x05: "nF",
-        0x06: "A",
-        0x07: "A",
-        0x08: "Hz",
-        0x09: "%",
-    }
-
-    overload = bool(stat[2] & 0x04)
-    hold = bool(stat[2] & 0x01)
-    error = bool(stat[3] & 0x04)
-    manual_range = bool(stat[3] & 0x02)
-    rel = bool(stat[3] & 0x01)
-    is_max = bool(stat[4] & 0x02)
-    is_min = bool(stat[4] & 0x01)
-
-    if error:
-        value_str = "Err"
-    elif overload:
-        value_str = "OL"
-
-    if not value_str:
-        return None
-
-    flags = []
-    if hold:
-        flags.append("hold")
-    if rel:
-        flags.append("rel")
-    if manual_range:
-        flags.append("manual")
-    if is_max:
-        flags.append("max")
-    if is_min:
-        flags.append("min")
-
-    mode_name = mode_map.get(mode_code, f"UNKNOWN (0x{mode_code:02x})")
-    unit = unit_map.get(mode_code, "")
-    range_str = chr(range_code) if range_code else ""
-
-    table_entry = MODE_RANGE_TABLE.get(mode_code)
-    idx = decode_range_index(range_code)
-    if table_entry is not None and idx is not None:
-        if idx < len(table_entry["units"]):
-            unit = table_entry["units"][idx]
-        if idx < len(table_entry["ranges"]):
-            range_str = table_entry["ranges"][idx]
-
-    return normalize_measurement(value_str, unit, mode_name, range_str, flags)
 
 
 class Driver:
+    worker_interval = 0  # read_measurement() blocks internally on the hardware frame
+
     def __init__(self, packet_source: Optional[Any] = None) -> None:
         self.packet_source = packet_source
         self.connected = False
         self.transport = CP2110Transport()
+        self.last_measurement: Optional[Dict[str, Any]] = None
+        self.last_measurement_at: Optional[float] = None
 
     def connect(self) -> bool:
         if self.connected:
@@ -264,27 +330,33 @@ class Driver:
         if not self.connected and not self.connect():
             return None
 
-        # If a packet source is provided (for testing), use it to get a packet.
-        # NOTE: test packets via DMM_8802E_PACKET_HEX must now include the
-        # signature(2) + length(1) + checksum(2) framing, since parse_packet
-        # expects a full frame just like the real transport returns.
         if self.packet_source is not None:
-            packet = self.packet_source()
-            if not packet:
+            frame = self.packet_source()
+        else:
+            frame = self.transport.read_packet()
+
+        if not frame:
+            if self.packet_source is None and self.transport.device is None:
+                self.connected = False
                 return None
-            return parse_packet(packet)
+            if (
+                self.last_measurement is not None
+                and self.last_measurement_at is not None
+                and time.monotonic() - self.last_measurement_at
+                >= STALE_MEASUREMENT_SECONDS
+            ):
+                stale_measurement = dict(self.last_measurement)
+                stale_measurement["value"] = "OL"
+                return stale_measurement
+            return self.last_measurement
 
-        # If no packet source is provided, read from the actual transport (the CP2110 device).
-        packet = self.transport.read_packet()
-        if not packet:
-            time.sleep(0.1)
-            return None
-
-        log_capture(packet)
-        return parse_packet(packet)
+        measurement = parse_packet(frame)
+        if measurement is not None:
+            self.last_measurement = measurement
+            self.last_measurement_at = time.monotonic()
+        return self.last_measurement
 
 
-# This is for testing purposes: optionally you can pass a DMM_8802E_PACKET_HEX environment variable to simulate a packet for testing without the actual device.
 def build_packet_source() -> Optional[Any]:
     packet_hex = os.environ.get("DMM_8802E_PACKET_HEX")
     if not packet_hex:
