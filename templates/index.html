@@ -28,7 +28,6 @@
         border-radius: 8px;
         border: 2px solid #00ffcc;
         box-shadow: 0 0 15px rgba(0, 255, 204, 0.4);
-        transition: all 0.3s ease;
       }
       .overlay-container.offline {
         border-color: #ff3333;
@@ -420,92 +419,59 @@
         return value >= 50;
       }
 
-      function updateDMM() {
-        window.pywebview.api
-          .get_measurement()
-          .then((data) => {
-            const modeText = data.mode || "Offline";
-            const valueText = data.value || "---";
-            const unitText = data.unit || "";
+      // dmm.py calls applyMeasurement(...) directly into this page via
+      // evaluate_js whenever a new reading comes in
+      function applyMeasurement(data) {
+        const modeText = data.mode || "Offline";
+        const valueText = data.value || "---";
+        const unitText = data.unit || "";
 
-            console.debug(data.value);
+        document.getElementById("mode").innerText = modeText;
+        document.getElementById("value").innerText = valueText;
+        document.getElementById("unit").innerText = unitText;
+        sparklineState.currentUnit = unitText;
 
-            document.getElementById("mode").innerText = modeText;
-            document.getElementById("value").innerText = valueText;
-            document.getElementById("unit").innerText = unitText;
-            sparklineState.currentUnit = unitText;
-
-            const container = document.getElementById("wrapper");
-            const modeWrapper = document.getElementById("modeWrapper");
-            const modeIcon = document.getElementById("modeIcon");
-            const numericValue = parseNumericValue(valueText);
-            const hasValue = Number.isFinite(numericValue);
-            const notShortActive = isContinuityNotShort(
-              modeText,
-              numericValue,
-              unitText,
-            );
-            const shortActive = isContinuityShort(
-              modeText,
-              numericValue,
-              unitText,
-            );
-            if (shortActive) {
-              container.classList.add("short");
-            } else {
-              container.classList.remove("short");
-            }
-            if (notShortActive) {
-              container.classList.add("not-short");
-            } else {
-              container.classList.remove("not-short");
-            }
-
-            if (modeText === "Cont") {
-              container.classList.add("cont-mode");
-              modeWrapper.classList.add("cont-mode");
-              modeIcon.style.display = "inline-block";
-            } else {
-              container.classList.remove("cont-mode");
-              modeWrapper.classList.remove("cont-mode");
-              modeIcon.style.display = "none";
-            }
-
-            if (modeText === "Offline" || modeText === "Disconnected") {
-              container.classList.add("offline");
-              addSparklineValue(null, modeText);
-            } else {
-              container.classList.remove("offline");
-              addSparklineValue(numericValue, modeText);
-            }
-          })
-          .catch((err) => {
-            console.error("API Error:", err);
-            document.getElementById("wrapper").classList.add("offline");
-            document.getElementById("mode").innerText = "Offline";
-            document.getElementById("value").innerText = "---";
-            document.getElementById("unit").innerText = "";
-            addSparklineValue(null, "Offline");
-          });
-      }
-
-      // pywebview injects window.pywebview once the DOM is ready but the bridge
-      // may not be available on the very first tick — wait for it before polling.
-      function waitForBridgeThenStart() {
-        if (
-          window.pywebview &&
-          window.pywebview.api &&
-          window.pywebview.api.get_measurement
-        ) {
-          resetSparkline();
-          updateDMM();
-          setInterval(updateDMM, 250);
+        const container = document.getElementById("wrapper");
+        const modeWrapper = document.getElementById("modeWrapper");
+        const modeIcon = document.getElementById("modeIcon");
+        const numericValue = parseNumericValue(valueText);
+        const notShortActive = isContinuityNotShort(
+          modeText,
+          numericValue,
+          unitText,
+        );
+        const shortActive = isContinuityShort(modeText, numericValue, unitText);
+        if (shortActive) {
+          container.classList.add("short");
         } else {
-          setTimeout(waitForBridgeThenStart, 50);
+          container.classList.remove("short");
+        }
+        if (notShortActive) {
+          container.classList.add("not-short");
+        } else {
+          container.classList.remove("not-short");
+        }
+
+        if (modeText === "Cont") {
+          container.classList.add("cont-mode");
+          modeWrapper.classList.add("cont-mode");
+          modeIcon.style.display = "inline-block";
+        } else {
+          container.classList.remove("cont-mode");
+          modeWrapper.classList.remove("cont-mode");
+          modeIcon.style.display = "none";
+        }
+
+        if (modeText === "Offline" || modeText === "Disconnected") {
+          container.classList.add("offline");
+          addSparklineValue(null, modeText);
+        } else {
+          container.classList.remove("offline");
+          addSparklineValue(numericValue, modeText);
         }
       }
 
-      waitForBridgeThenStart();
+      resetSparkline();
     </script>
   </body>
 </html>

@@ -107,6 +107,7 @@ pip install pyinstaller
 pyinstaller \
   --name "OBS DMM Display" \
   --windowed \
+  --icon=dmm.icns \
   --onefile \
   --collect-all webview \
   --add-data "templates:templates" \

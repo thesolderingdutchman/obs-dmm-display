@@ -1,5 +1,7 @@
+import json
 import os
 import pathlib
+import sys
 import threading
 
 import webview
@@ -28,15 +30,21 @@ class MeasurementStore:
 
 store = MeasurementStore()
 
+_window = None
 
-class MeasurementAPI:
-    def get_measurement(self):
-        print("API:", store.snapshot())
-        return store.snapshot()
+
+def push_to_window(measurement):
+    if _window is None:
+        return
+    try:
+        _window.evaluate_js(f"applyMeasurement({json.dumps(measurement)})")
+    except Exception as exc:
+        print(f"[Push] {exc}")
 
 
 def update_measurement(measurement):
     store.update(measurement)
+    push_to_window(store.snapshot())
 
 
 def create_driver_for_mode(mode: str):
@@ -72,10 +80,6 @@ class DriverManager:
             try:
                 measurement = driver.read_measurement()
                 update_measurement(measurement)
-                # print(
-                #     f"[Hardware] {self.mode} measurement: {measurement['value']} {measurement['unit']} ({measurement['mode']})"
-                # )
-
             except Exception as exc:
                 print(f"[Hardware] {exc}")
                 update_measurement(None)
@@ -96,10 +100,7 @@ class DriverManager:
 
         print(f"Switching to {mode}")
 
-        #
         # Stop previous worker
-        #
-
         if self.stop_event:
             self.stop_event.set()
 
@@ -108,10 +109,7 @@ class DriverManager:
 
         update_measurement(None)
 
-        #
         # Start new driver
-        #
-
         self.driver = create_driver_for_mode(mode)
         self.mode = mode
 
@@ -126,6 +124,28 @@ class DriverManager:
         )
 
         self.thread.start()
+
+
+def prevent_app_nap():
+    """Stop macOS from throttling this background/inactive app.
+
+    Without this, App Nap can slow down timers and I/O for a packaged app
+    once it loses focus or is fully occluded, which is on top of (and
+    separate from) WKWebView's own background-tab throttling.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        from AppKit import NSActivityLatencyCritical, NSActivityUserInitiated, NSProcessInfo
+
+        activity = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+            NSActivityUserInitiated | NSActivityLatencyCritical,
+            "Realtime OBS overlay updates",
+        )
+        return activity
+    except Exception as exc:
+        print(f"[AppNap] Could not disable App Nap: {exc}")
+        return None
 
 
 driver_manager = None
@@ -144,7 +164,12 @@ def select_ut8803e():
 
 
 def main():
-    global driver_manager
+    global driver_manager, _window
+
+    # Keep a module-level reference so the activity token isn't garbage
+    # collected and the App Nap exemption doesn't get released.
+    global _app_nap_activity
+    _app_nap_activity = prevent_app_nap()
 
     selected_mode = os.environ.get("DMM_MODE", "ut161b")
 
@@ -164,14 +189,9 @@ def main():
 
     html_path = pathlib.Path(__file__).parent / "templates" / "index.html"
 
-
-    api = MeasurementAPI()
-    print(dir(api))
-
-    webview.create_window(
+    _window = webview.create_window(
         title="OBS DMM Display",
         url=html_path.as_uri(),
-        js_api=api,
         frameless=True,
         transparent=True,
         resizable=False,
@@ -179,7 +199,11 @@ def main():
         height=157,
     )
 
-    webview.start(debug=True, menu=app_menu)
+    # Push whatever we already have as soon as the page can receive it,
+    # rather than waiting for the next hardware read.
+    _window.events.loaded += lambda: push_to_window(store.snapshot())
+
+    webview.start(menu=app_menu)
 
 if __name__ == "__main__":
     main()
