@@ -1,4 +1,4 @@
-Flask
-Flask-Cors
+pywebview
 pycp2110
 hidapi
+pyinstaller
